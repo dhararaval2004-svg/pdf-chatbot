@@ -4,7 +4,8 @@ from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings  # CHANGED: Using HuggingFace instead of Google
+from langchain_huggingface import HuggingFaceEmbeddings 
+ # CHANGED: Using HuggingFace instead of Google
 from langchain_community.vectorstores import FAISS
 
 # -------------------- LOAD ENV --------------------
@@ -63,6 +64,27 @@ def get_vectorstore(text_chunks):
 
     return vectorstore
 
+# -------------------- SIMILARITY SEARCH --------------------
+def search_relevant_chunks(vectorstore, question, k=3):
+    """
+    Find the most relevant chunks for a question
+    
+    Parameters:
+    - vectorstore: The FAISS database with all chunks
+    - question: User's question as a string
+    - k: How many chunks to retrieve (default: 3)
+    
+    Returns:
+    - List of relevant text chunks
+    """
+    # Search for similar chunks
+    # This converts the question to numbers and finds matching chunks
+    relevant_docs = vectorstore.similarity_search(question, k=k)
+    
+    # Extract just the text from the results
+    relevant_texts = [doc.page_content for doc in relevant_docs]
+    
+    return relevant_texts
 
 # -------------------- MAIN APP --------------------
 def main():
@@ -126,10 +148,21 @@ def main():
     if user_question:
         if "vectorstore" not in st.session_state:
             st.warning("⚠️ Please upload and process PDFs first.")
-        else:
-            st.info("Vector store ready. Chat logic can be added next.")
-            # TODO: Add chat/QA functionality here
 
+        else:    
+            # Step 1: Search for relevant chunks
+            with st.spinner("Searching for relevant information..."):
+                relevant_chunks = search_relevant_chunks(
+                    st.session_state.vectorstore, 
+                    user_question,
+                    k=3  # Get top 3 most relevant chunks
+                )
+        
+            # Display what we found (for testing)
+            st.write("### 🔍 Found these relevant sections:")
+            for i, chunk in enumerate(relevant_chunks, 1):
+                with st.expander(f"Chunk {i}"):
+                    st.write(chunk)
 
 # -------------------- RUN --------------------
 if __name__ == "__main__":
