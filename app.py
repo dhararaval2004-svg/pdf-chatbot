@@ -2,7 +2,6 @@ import streamlit as st
 import os
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
-
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings 
  # CHANGED: Using HuggingFace instead of Google
@@ -65,7 +64,7 @@ def get_vectorstore(text_chunks):
     return vectorstore
 
 # -------------------- SIMILARITY SEARCH --------------------
-def search_relevant_chunks(vectorstore, question, k=3):
+def search_relevant_chunks(vectorstore, question, k=6):
     """
     Find the most relevant chunks for a question
     
@@ -155,7 +154,7 @@ def main():
                 relevant_chunks = search_relevant_chunks(
                     st.session_state.vectorstore, 
                     user_question,
-                    k=3  # Get top 3 most relevant chunks
+                    k=6  # Get top 3 most relevant chunks
                 )
         
             # Display what we found (for testing)
@@ -163,6 +162,7 @@ def main():
             for i, chunk in enumerate(relevant_chunks, 1):
                 with st.expander(f"Chunk {i}"):
                     st.write(chunk)
+
 
 # -------------------- RUN --------------------
 if __name__ == "__main__":
