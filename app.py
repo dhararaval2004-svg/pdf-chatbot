@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 import json
+from datetime import datetime
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings 
@@ -11,6 +12,16 @@ from langchain_groq import ChatGroq
 
 # -------------------- LOAD ENV --------------------
 load_dotenv()
+
+# -------------------- LOCAL STORAGE SETUP --------------------
+DATA_FOLDER = "data"
+PDF_FOLDER = os.path.join(DATA_FOLDER, "pdfs")
+VECTORS_FOLDER = os.path.join(DATA_FOLDER, "vectors")
+METADATA_FILE = os.path.join(DATA_FOLDER, "metadata.json")
+
+# Create folders if they don't exist
+os.makedirs(PDF_FOLDER, exist_ok=True)
+os.makedirs(VECTORS_FOLDER, exist_ok=True)
 
 # -------------------- THEME PERSISTENCE --------------------
 THEME_FILE = "theme_preference.json"
@@ -33,6 +44,140 @@ def load_theme():
     except Exception as e:
         st.warning(f"Could not load theme preference: {e}")
     return 'light'
+
+
+# -------------------- LOCAL DATA MANAGEMENT --------------------
+def save_metadata(metadata):
+    """Save document metadata to JSON file"""
+    try:
+        with open(METADATA_FILE, 'w') as f:
+            json.dump(metadata, f, indent=2)
+    except Exception as e:
+        st.error(f"Could not save metadata: {e}")
+
+
+def load_metadata():
+    """Load document metadata from JSON file"""
+    try:
+        if os.path.exists(METADATA_FILE):
+            with open(METADATA_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        st.warning(f"Could not load metadata: {e}")
+    return {}
+
+
+def save_pdf_locally(pdf_file, pdf_id):
+    """Save uploaded PDF to local data folder"""
+    try:
+        pdf_path = os.path.join(PDF_FOLDER, f"{pdf_id}.pdf")
+        with open(pdf_path, 'wb') as f:
+            f.write(pdf_file.getbuffer())
+        return pdf_path
+    except Exception as e:
+        st.error(f"Could not save PDF: {e}")
+        return None
+
+
+def save_vectorstore_locally(vectorstore, vector_id):
+    """Save FAISS vectorstore to local data folder"""
+    try:
+        vector_path = os.path.join(VECTORS_FOLDER, vector_id)
+        vectorstore.save_local(vector_path)
+        return vector_path
+    except Exception as e:
+        st.error(f"Could not save vectorstore: {e}")
+        return None
+
+
+def load_vectorstore_locally(vector_id):
+    """Load FAISS vectorstore from local data folder"""
+    try:
+        vector_path = os.path.join(VECTORS_FOLDER, vector_id)
+        if os.path.exists(vector_path):
+            embeddings = HuggingFaceEmbeddings(
+                model_name="sentence-transformers/all-MiniLM-L6-v2",
+                model_kwargs={'device': 'cpu'},
+                encode_kwargs={'normalize_embeddings': True}
+            )
+            vectorstore = FAISS.load_local(
+                vector_path, 
+                embeddings,
+                allow_dangerous_deserialization=True
+            )
+            return vectorstore
+    except Exception as e:
+        st.error(f"Could not load vectorstore: {e}")
+    return None
+
+
+def list_saved_documents():
+    """Get list of all saved documents"""
+    metadata = load_metadata()
+    return metadata.get('documents', [])
+
+
+def delete_document_locally(doc_id):
+    """Delete a document and its associated files"""
+    try:
+        # Delete PDF
+        pdf_path = os.path.join(PDF_FOLDER, f"{doc_id}.pdf")
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+        
+        # Delete vectorstore folder
+        vector_path = os.path.join(VECTORS_FOLDER, doc_id)
+        if os.path.exists(vector_path):
+            import shutil
+            shutil.rmtree(vector_path)
+        
+        # Update metadata
+        metadata = load_metadata()
+        documents = metadata.get('documents', [])
+        metadata['documents'] = [doc for doc in documents if doc['id'] != doc_id]
+        save_metadata(metadata)
+        
+        return True
+    except Exception as e:
+        st.error(f"Could not delete document: {e}")
+        return False
+
+
+# -------------------- CHAT HISTORY FUNCTIONS --------------------
+def init_chat_history():
+    """Initialize chat history in session state"""
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+
+def add_to_history(question, answer):
+    """Add a Q&A pair to chat history"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state.chat_history.append({
+        'timestamp': timestamp,
+        'question': question,
+        'answer': answer
+    })
+
+def clear_history():
+    """Clear all chat history"""
+    st.session_state.chat_history = []
+
+def download_conversation():
+    """Generate downloadable text file of conversation"""
+    if not st.session_state.chat_history:
+        return "No conversation history to download."
+    
+    content = "=== PDF Chat Conversation History ===\n\n"
+    for i, chat in enumerate(st.session_state.chat_history, 1):
+        content += f"{'='*50}\n"
+        content += f"Conversation #{i}\n"
+        content += f"Time: {chat['timestamp']}\n"
+        content += f"\nQ: {chat['question']}\n"
+        content += f"\nA: {chat['answer']}\n"
+        content += f"{'='*50}\n\n"
+    
+    return content
+
 
 # -------------------- PDF TEXT EXTRACTION --------------------
 def get_pdf_text(pdf_docs):
@@ -136,6 +281,7 @@ def apply_theme(theme):
         .stButton > button {{ background-color:#238636 !important; color:white !important; border-radius:8px !important; }}
         .stButton > button:hover {{ transform:translateY(-1px); box-shadow:0 6px 14px rgba(0,0,0,0.25); }}
         div[data-testid="stExpander"] {{ background-color:#161b22 !important; border:1px solid #30363d !important; border-radius:10px !important; }}
+        .chat-message {{ background-color: #161b22 !important; border: 1px solid #30363d !important; }}
         </style>
         """, unsafe_allow_html=True)
 
@@ -152,6 +298,7 @@ def apply_theme(theme):
         .stButton > button {{ background-color:#ec407a !important; color:white !important; border-radius:8px !important; }}
         .stButton > button:hover {{ transform:translateY(-1px); box-shadow:0 6px 14px rgba(236,64,122,0.35); }}
         div[data-testid="stExpander"] {{ background-color:#fff7fa !important; border-radius:10px !important; border:1px solid #f4b6c2 !important; }}
+        .chat-message {{ background-color: #fff7fa !important; border: 1px solid #f4b6c2 !important; }}
         </style>
         """, unsafe_allow_html=True)
 
@@ -168,60 +315,182 @@ def apply_theme(theme):
         .stButton > button {{ background-color:#1976d2 !important; color:white !important; border-radius:8px !important; }}
         .stButton > button:hover {{ transform:translateY(-1px); box-shadow:0 6px 14px rgba(0,0,0,0.15); }}
         div[data-testid="stExpander"] {{ background-color:#ffffff !important; border-radius:10px !important; border:1px solid #ddd !important; }}
+        .chat-message {{ background-color: #f0f2f6 !important; border: 1px solid #ddd !important; }}
         </style>
         """, unsafe_allow_html=True)
 
 
 # -------------------- MAIN APP --------------------
 def main():
-    st.set_page_config(page_title="Chat with PDFs", page_icon="📚")
+    st.set_page_config(page_title="Chat with PDFs", page_icon="📚", layout="wide")
+
+    # Initialize chat history
+    init_chat_history()
 
     # Load saved theme on startup
     if "theme" not in st.session_state:
         st.session_state.theme = load_theme()
 
-    # ----- Theme radio with callback -----
-    def update_theme():
-        new_theme = st.session_state.theme_radio
-        st.session_state.theme = new_theme
-        save_theme(new_theme)  # Save to file when changed
-
-    with st.sidebar:
-        st.radio(
-            "🎨 Select Theme",
-            ["light", "dark", "pink"],
-            key="theme_radio",
-            index=["light","dark","pink"].index(st.session_state.theme),
-            on_change=update_theme
-        )
-
     apply_theme(st.session_state.theme)
 
-    st.header("Chat with multiple PDFs 📚")
+    # ========== HEADER WITH THEME BUTTONS ==========
+    header_col1, header_col2, header_col3, header_col4, header_col5 = st.columns([4, 1, 1, 1, 1])
+    
+    with header_col1:
+        st.header("Chat with multiple PDFs 📚")
+    
+    with header_col3:
+        if st.button("☀️ Light", key="light_btn", use_container_width=True, 
+                    type="primary" if st.session_state.theme == 'light' else "secondary"):
+            st.session_state.theme = 'light'
+            save_theme('light')
+            st.rerun()
+    
+    with header_col4:
+        if st.button("🌙 Dark", key="dark_btn", use_container_width=True,
+                    type="primary" if st.session_state.theme == 'dark' else "secondary"):
+            st.session_state.theme = 'dark'
+            save_theme('dark')
+            st.rerun()
+    
+    with header_col5:
+        if st.button("💖 Pink", key="pink_btn", use_container_width=True,
+                    type="primary" if st.session_state.theme == 'pink' else "secondary"):
+            st.session_state.theme = 'pink'
+            save_theme('pink')
+            st.rerun()
+
+    st.markdown("---")
 
     # Check API key
     if not os.getenv("GROQ_API_KEY"):
         st.error("⚠️ GROQ_API_KEY not found in .env file. Please add it to use answer generation.")
         st.stop()
 
-    user_question = st.text_input("Ask a question about your documents:")
+    # ========== MAIN CONTENT - TWO COLUMNS ==========
+    col1, col2 = st.columns([2.5, 1])
 
+    # ========== LEFT COLUMN - CHAT INTERFACE ==========
+    with col1:
+        st.subheader("💬 Ask Questions")
+        
+        # Question input
+        user_question = st.text_input("Type your question here:", key="question_input")
+        
+        # QUESTION SUGGESTIONS
+        if "vectorstore" in st.session_state:
+            st.write("**💡 Suggested Questions:**")
+            suggestions = [
+                "What is the main topic of this document?",
+                "Can you summarize the key points?",
+                "What are the important conclusions?",
+                "Explain the methodology used",
+                "What are the recommendations?"
+            ]
+            
+            cols = st.columns(len(suggestions))
+            for idx, suggestion in enumerate(suggestions):
+                with cols[idx]:
+                    if st.button(f"📝 {idx+1}", key=f"suggestion_{idx}", help=suggestion, use_container_width=True):
+                        st.session_state.selected_suggestion = suggestion
+                        st.rerun()
+            
+            # Show selected suggestion
+            if 'selected_suggestion' in st.session_state:
+                user_question = st.session_state.selected_suggestion
+                st.info(f"Selected: {user_question}")
+                del st.session_state.selected_suggestion
+
+    # ========== RIGHT COLUMN - HISTORY ONLY ==========
+    with col2:
+        st.subheader("📜 Chat History")
+        
+        # History controls
+        col_clear, col_download = st.columns(2)
+        with col_clear:
+            if st.button("🗑️ Clear", use_container_width=True):
+                clear_history()
+                st.rerun()
+        with col_download:
+            if st.session_state.chat_history:
+                st.download_button(
+                    label="💾 Download",
+                    data=download_conversation(),
+                    file_name=f"chat_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+        
+        # Display chat history
+        if st.session_state.chat_history:
+            st.write(f"**{len(st.session_state.chat_history)} conversation(s)**")
+            
+            # Show last 5 conversations
+            for i, chat in enumerate(reversed(st.session_state.chat_history[-5:]), 1):
+                with st.expander(f"💬 {chat['question'][:30]}...", expanded=(i==1)):
+                    st.caption(f"🕐 {chat['timestamp']}")
+                    st.write(f"**Q:** {chat['question']}")
+                    st.write(f"**A:** {chat['answer']}")
+        else:
+            st.info("No chat history yet. Start asking questions!")
+
+    # ========== SIDEBAR - PDF UPLOAD ==========
     with st.sidebar:
-        st.subheader("Upload PDFs")
+        st.subheader("📄 Your Documents")
+        
+        # Show saved documents
+        saved_docs = list_saved_documents()
+        if saved_docs:
+            st.write(f"**{len(saved_docs)} saved document(s)**")
+            
+            for doc in saved_docs:
+                col_doc, col_load, col_del = st.columns([3, 1, 1])
+                
+                with col_doc:
+                    st.write(f"📄 {doc['name']}")
+                    st.caption(f"{doc['chunks']} chunks • {doc['date']}")
+                
+                with col_load:
+                    if st.button("📂", key=f"load_{doc['id']}", help="Load document"):
+                        with st.spinner("Loading..."):
+                            vectorstore = load_vectorstore_locally(doc['id'])
+                            if vectorstore:
+                                st.session_state.vectorstore = vectorstore
+                                st.session_state.current_doc = doc
+                                st.success(f"Loaded: {doc['name']}")
+                                st.rerun()
+                
+                with col_del:
+                    if st.button("🗑️", key=f"del_{doc['id']}", help="Delete document"):
+                        if delete_document_locally(doc['id']):
+                            st.success("Deleted!")
+                            st.rerun()
+            
+            st.markdown("---")
+        
+        # Show currently loaded document
+        if 'current_doc' in st.session_state:
+            st.info(f"📖 Active: {st.session_state.current_doc['name']}")
+            st.markdown("---")
+        
+        st.subheader("📤 Upload New PDFs")
         pdf_docs = st.file_uploader(
             "Upload PDFs and click Process",
             accept_multiple_files=True,
             type=["pdf"]
         )
 
-        if st.button("Process"):
+        if st.button("Process", use_container_width=True):
             if not pdf_docs:
                 st.error("Please upload at least one PDF.")
                 st.stop()
 
-            # ---------- Pink Theme Loading Skeleton ----------
+            # Generate unique document ID
+            doc_id = f"doc_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            doc_name = ", ".join([pdf.name for pdf in pdf_docs])
+
+            # Pink theme loading skeleton
             if st.session_state.theme == "pink":
-                # Create skeleton placeholder
                 skeleton_placeholder = st.empty()
                 skeleton_placeholder.markdown("""
                 <div style="padding: 20px;">
@@ -254,6 +523,7 @@ def main():
                 </style>
                 """, unsafe_allow_html=True)
                 
+                # Process PDFs
                 raw_text = get_pdf_text(pdf_docs)
                 if not raw_text.strip():
                     skeleton_placeholder.empty()
@@ -267,14 +537,37 @@ def main():
                     st.stop()
 
                 vectorstore = get_vectorstore(text_chunks)
-                st.session_state.vectorstore = vectorstore
                 
-                # Clear skeleton and show success
+                # Save PDFs locally
+                for pdf in pdf_docs:
+                    save_pdf_locally(pdf, f"{doc_id}_{pdf.name}")
+                
+                # Save vectorstore locally
+                save_vectorstore_locally(vectorstore, doc_id)
+                
+                # Save metadata
+                metadata = load_metadata()
+                if 'documents' not in metadata:
+                    metadata['documents'] = []
+                
+                metadata['documents'].append({
+                    'id': doc_id,
+                    'name': doc_name,
+                    'chunks': len(text_chunks),
+                    'date': datetime.now().strftime('%Y-%m-%d %H:%M')
+                })
+                save_metadata(metadata)
+                
+                # Set as current document
+                st.session_state.vectorstore = vectorstore
+                st.session_state.current_doc = metadata['documents'][-1]
+                
                 skeleton_placeholder.empty()
-                st.success("✅ PDFs processed successfully!")
+                st.success(f"✅ Saved: {doc_name}")
+                st.rerun()
             
             else:
-                # ---------- Default Loading for other themes ----------
+                # Default loading for other themes
                 with st.spinner("Reading PDFs..."):
                     raw_text = get_pdf_text(pdf_docs)
                     if not raw_text.strip():
@@ -290,72 +583,128 @@ def main():
 
                     with st.spinner("Creating embeddings..."):
                         vectorstore = get_vectorstore(text_chunks)
+                        
+                        # Save PDFs locally
+                        for pdf in pdf_docs:
+                            save_pdf_locally(pdf, f"{doc_id}_{pdf.name}")
+                        
+                        # Save vectorstore locally
+                        save_vectorstore_locally(vectorstore, doc_id)
+                        
+                        # Save metadata
+                        metadata = load_metadata()
+                        if 'documents' not in metadata:
+                            metadata['documents'] = []
+                        
+                        metadata['documents'].append({
+                            'id': doc_id,
+                            'name': doc_name,
+                            'chunks': len(text_chunks),
+                            'date': datetime.now().strftime('%Y-%m-%d %H:%M')
+                        })
+                        save_metadata(metadata)
+                        
+                        # Set as current document
                         st.session_state.vectorstore = vectorstore
-                        st.success("✅ PDFs processed successfully!")
+                        st.session_state.current_doc = metadata['documents'][-1]
+                        
+                        st.success(f"✅ Saved: {doc_name}")
+                        st.rerun()
 
-    # ---------- Handle questions ----------
+    # ========== HANDLE QUESTIONS - DISPLAY ANSWERS IN LEFT COLUMN ==========
     if user_question:
         if "vectorstore" not in st.session_state:
-            st.warning("⚠️ Please upload and process PDFs first.")
+            with col1:
+                st.warning("⚠️ Please upload and process PDFs first.")
         else:
-            # ---------- Pink Theme Loading Skeleton ----------
-            if st.session_state.theme == "pink":
-                skeleton_placeholder = st.empty()
-                skeleton_placeholder.markdown("""
-                <div style="padding: 20px;">
-                    <div style="background: linear-gradient(90deg, #ffe4ec 0%, #ffc9d9 50%, #ffe4ec 100%); 
-                                background-size: 200% 100%; 
-                                animation: shimmer 1.5s infinite;
-                                height: 40px; 
-                                border-radius: 8px; 
-                                margin-bottom: 10px;">
+            with col1:
+                # Pink theme loading skeleton
+                if st.session_state.theme == "pink":
+                    skeleton_placeholder = st.empty()
+                    skeleton_placeholder.markdown("""
+                    <div style="padding: 20px;">
+                        <div style="background: linear-gradient(90deg, #ffe4ec 0%, #ffc9d9 50%, #ffe4ec 100%); 
+                                    background-size: 200% 100%; 
+                                    animation: shimmer 1.5s infinite;
+                                    height: 40px; 
+                                    border-radius: 8px; 
+                                    margin-bottom: 10px;">
+                        </div>
+                        <div style="background: linear-gradient(90deg, #ffe4ec 0%, #ffc9d9 50%, #ffe4ec 100%); 
+                                    background-size: 200% 100%; 
+                                    animation: shimmer 1.5s infinite;
+                                    height: 100px; 
+                                    border-radius: 8px;">
+                        </div>
                     </div>
-                    <div style="background: linear-gradient(90deg, #ffe4ec 0%, #ffc9d9 50%, #ffe4ec 100%); 
-                                background-size: 200% 100%; 
-                                animation: shimmer 1.5s infinite;
-                                height: 100px; 
-                                border-radius: 8px;">
-                    </div>
-                </div>
-                <style>
-                @keyframes shimmer {
-                    0% { background-position: 200% 0; }
-                    100% { background-position: -200% 0; }
-                }
-                </style>
-                """, unsafe_allow_html=True)
-                
-                try:
-                    result = generate_answer(st.session_state.vectorstore, user_question)
-                    skeleton_placeholder.empty()
+                    <style>
+                    @keyframes shimmer {
+                        0% { background-position: 200% 0; }
+                        100% { background-position: -200% 0; }
+                    }
+                    </style>
+                    """, unsafe_allow_html=True)
                     
-                    st.write("### 💬 Answer:")
-                    st.write(result['result'])
-
-                    with st.expander("📄 Source Chunks Used"):
-                        for i, doc in enumerate(result['source_documents'], 1):
-                            st.write(f"**Chunk {i}:**")
-                            st.write(doc.page_content)
-                            st.write("---")
-                except Exception as e:
-                    skeleton_placeholder.empty()
-                    st.error(f"Error generating answer: {str(e)}")
-            
-            else:
-                # ---------- Default Loading for other themes ----------
-                with st.spinner("Generating answer..."):
                     try:
                         result = generate_answer(st.session_state.vectorstore, user_question)
+                        skeleton_placeholder.empty()
+                        
+                        answer_text = result['result']
+                        
+                        # Add to chat history
+                        add_to_history(user_question, answer_text)
+                        
+                        # Display answer
                         st.write("### 💬 Answer:")
-                        st.write(result['result'])
+                        st.write(answer_text)
+                        
+                        # COPY BUTTON WITH ICON
+                        if st.button("📋 Copy Answer", key="copy_btn", use_container_width=True):
+                            st.code(answer_text, language=None)
+                            st.success("✅ Use Ctrl+C to copy from the code block above!")
 
                         with st.expander("📄 Source Chunks Used"):
                             for i, doc in enumerate(result['source_documents'], 1):
                                 st.write(f"**Chunk {i}:**")
                                 st.write(doc.page_content)
                                 st.write("---")
+                        
+                        st.rerun()  # Refresh to show in history
+                        
                     except Exception as e:
+                        skeleton_placeholder.empty()
                         st.error(f"Error generating answer: {str(e)}")
+                
+                else:
+                    # Default loading for other themes
+                    with st.spinner("Generating answer..."):
+                        try:
+                            result = generate_answer(st.session_state.vectorstore, user_question)
+                            
+                            answer_text = result['result']
+                            
+                            # Add to chat history
+                            add_to_history(user_question, answer_text)
+                            
+                            # Display answer
+                            st.write("### 💬 Answer:")
+                            st.write(answer_text)
+                            
+                            # COPY BUTTON WITH ICON
+                            if st.button("📋 Copy Answer", key="copy_btn", use_container_width=True):
+                                st.code(answer_text, language=None)
+                                st.success("✅ Use Ctrl+C to copy from the code block above!")
+
+                            with st.expander("📄 Source Chunks Used"):
+                                for i, doc in enumerate(result['source_documents'], 1):
+                                    st.write(f"**Chunk {i}:**")
+                                    st.write(doc.page_content)
+                                    st.write("---")
+                            
+                            st.rerun()  # Refresh to show in history
+                            
+                        except Exception as e:
+                            st.error(f"Error generating answer: {str(e)}")
 
 
 # -------------------- RUN --------------------
