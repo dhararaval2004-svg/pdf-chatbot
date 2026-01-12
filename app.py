@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 import json
 from datetime import datetime
+import sqlite3
+import hashlib 
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings 
@@ -22,6 +24,51 @@ METADATA_FILE = os.path.join(DATA_FOLDER, "metadata.json")
 # Create folders if they don't exist
 os.makedirs(PDF_FOLDER, exist_ok=True)
 os.makedirs(VECTORS_FOLDER, exist_ok=True)
+
+# -------------------- AUTH DATABASE --------------------
+AUTH_DB = "users.db"
+
+def init_auth_db():
+    conn = sqlite3.connect(AUTH_DB)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def register_user(username, password):
+    try:
+        conn = sqlite3.connect(AUTH_DB)
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO users (username, password) VALUES (?, ?)",
+            (username, hash_password(password))
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+def login_user(username, password):
+    conn = sqlite3.connect(AUTH_DB)
+    c = conn.cursor()
+    c.execute(
+        "SELECT * FROM users WHERE username=? AND password=?",
+        (username, hash_password(password))
+    )
+    user = c.fetchone()
+    conn.close()
+    return user is not None
+
 
 # -------------------- THEME PERSISTENCE --------------------
 THEME_FILE = "theme_preference.json"
@@ -317,15 +364,48 @@ def apply_theme(theme):
         div[data-testid="stExpander"] {{ background-color:#ffffff !important; border-radius:10px !important; border:1px solid #ddd !important; }}
         .chat-message {{ background-color: #f0f2f6 !important; border: 1px solid #ddd !important; }}
         </style>
+
         """, unsafe_allow_html=True)
 
+def auth_page():
+    st.title("🔐 Login / Register")
+
+    tab1, tab2 = st.tabs(["Login", "Register"])
+
+    with tab1:
+        username = st.text_input("Username", key="login_user")
+        password = st.text_input("Password", type="password", key="login_pass")
+
+        if st.button("Login", use_container_width=True):
+            if login_user(username, password):
+                st.session_state.authenticated = True
+                st.session_state.username = username
+                st.success("Login successful!")
+                st.rerun()
+            else:
+                st.error("Invalid username or password")
+
+    with tab2:
+        new_user = st.text_input("New Username", key="reg_user")
+        new_pass = st.text_input("New Password", type="password", key="reg_pass")
+
+        if st.button("Register", use_container_width=True):
+            if register_user(new_user, new_pass):
+                st.success("Account created! You can now login.")
+            else:
+                st.error("Username already exists")
 
 # -------------------- MAIN APP --------------------
+
 def main():
     st.set_page_config(page_title="Chat with PDFs", page_icon="📚", layout="wide")
 
     # Initialize chat history
     init_chat_history()
+    
+    # Initialize last processed question tracker
+    if 'last_processed_question' not in st.session_state:
+        st.session_state.last_processed_question = None
 
     # Load saved theme on startup
     if "theme" not in st.session_state:
@@ -362,6 +442,7 @@ def main():
 
     st.markdown("---")
 
+
     # Check API key
     if not os.getenv("GROQ_API_KEY"):
         st.error("⚠️ GROQ_API_KEY not found in .env file. Please add it to use answer generation.")
@@ -377,30 +458,8 @@ def main():
         # Question input
         user_question = st.text_input("Type your question here:", key="question_input")
         
-        # QUESTION SUGGESTIONS
-        if "vectorstore" in st.session_state:
-            st.write("**💡 Suggested Questions:**")
-            suggestions = [
-                "What is the main topic of this document?",
-                "Can you summarize the key points?",
-                "What are the important conclusions?",
-                "Explain the methodology used",
-                "What are the recommendations?"
-            ]
-            
-            cols = st.columns(len(suggestions))
-            for idx, suggestion in enumerate(suggestions):
-                with cols[idx]:
-                    if st.button(f"📝 {idx+1}", key=f"suggestion_{idx}", help=suggestion, use_container_width=True):
-                        st.session_state.selected_suggestion = suggestion
-                        st.rerun()
-            
-            # Show selected suggestion
-            if 'selected_suggestion' in st.session_state:
-                user_question = st.session_state.selected_suggestion
-                st.info(f"Selected: {user_question}")
-                del st.session_state.selected_suggestion
-
+        
+        
     # ========== RIGHT COLUMN - HISTORY ONLY ==========
     with col2:
         st.subheader("📜 Chat History")
@@ -427,46 +486,16 @@ def main():
             
             # Show last 5 conversations
             for i, chat in enumerate(reversed(st.session_state.chat_history[-5:]), 1):
-                with st.expander(f"💬 {chat['question'][:30]}...", expanded=(i==1)):
-                    st.caption(f"🕐 {chat['timestamp']}")
-                    st.write(f"**Q:** {chat['question']}")
-                    st.write(f"**A:** {chat['answer']}")
-        else:
-            st.info("No chat history yet. Start asking questions!")
+             with st.expander(f"💬 {chat['question'][:40]}...", expanded=False):
+                st.caption(f"🕐 {chat['timestamp']}")
+                st.write(f"**Question:** {chat['question']}")
+                st.write(f"**Answer:** {chat['answer']}")
+
 
     # ========== SIDEBAR - PDF UPLOAD ==========
     with st.sidebar:
         st.subheader("📄 Your Documents")
-        
-        # Show saved documents
-        saved_docs = list_saved_documents()
-        if saved_docs:
-            st.write(f"**{len(saved_docs)} saved document(s)**")
-            
-            for doc in saved_docs:
-                col_doc, col_load, col_del = st.columns([3, 1, 1])
-                
-                with col_doc:
-                    st.write(f"📄 {doc['name']}")
-                    st.caption(f"{doc['chunks']} chunks • {doc['date']}")
-                
-                with col_load:
-                    if st.button("📂", key=f"load_{doc['id']}", help="Load document"):
-                        with st.spinner("Loading..."):
-                            vectorstore = load_vectorstore_locally(doc['id'])
-                            if vectorstore:
-                                st.session_state.vectorstore = vectorstore
-                                st.session_state.current_doc = doc
-                                st.success(f"Loaded: {doc['name']}")
-                                st.rerun()
-                
-                with col_del:
-                    if st.button("🗑️", key=f"del_{doc['id']}", help="Delete document"):
-                        if delete_document_locally(doc['id']):
-                            st.success("Deleted!")
-                            st.rerun()
-            
-            st.markdown("---")
+
         
         # Show currently loaded document
         if 'current_doc' in st.session_state:
@@ -612,7 +641,8 @@ def main():
                         st.rerun()
 
     # ========== HANDLE QUESTIONS - DISPLAY ANSWERS IN LEFT COLUMN ==========
-    if user_question:
+    # CRITICAL FIX: Only process if question is new and different from last processed
+    if user_question and user_question != st.session_state.last_processed_question:
         if "vectorstore" not in st.session_state:
             with col1:
                 st.warning("⚠️ Please upload and process PDFs first.")
@@ -654,6 +684,9 @@ def main():
                         # Add to chat history
                         add_to_history(user_question, answer_text)
                         
+                        # Mark this question as processed
+                        st.session_state.last_processed_question = user_question
+                        
                         # Display answer
                         st.write("### 💬 Answer:")
                         st.write(answer_text)
@@ -668,8 +701,6 @@ def main():
                                 st.write(f"**Chunk {i}:**")
                                 st.write(doc.page_content)
                                 st.write("---")
-                        
-                        st.rerun()  # Refresh to show in history
                         
                     except Exception as e:
                         skeleton_placeholder.empty()
@@ -686,6 +717,9 @@ def main():
                             # Add to chat history
                             add_to_history(user_question, answer_text)
                             
+                            # Mark this question as processed
+                            st.session_state.last_processed_question = user_question
+                            
                             # Display answer
                             st.write("### 💬 Answer:")
                             st.write(answer_text)
@@ -701,12 +735,18 @@ def main():
                                     st.write(doc.page_content)
                                     st.write("---")
                             
-                            st.rerun()  # Refresh to show in history
-                            
                         except Exception as e:
                             st.error(f"Error generating answer: {str(e)}")
 
 
 # -------------------- RUN --------------------
 if __name__ == "__main__":
-    main()
+    init_auth_db()
+
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if not st.session_state.authenticated:
+        auth_page()
+    else:
+        main()
