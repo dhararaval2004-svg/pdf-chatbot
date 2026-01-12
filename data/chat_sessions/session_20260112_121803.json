@@ -1,0 +1,16 @@
+{
+  "session_id": "session_20260112_121803",
+  "created_at": "2026-01-12 12:19:27",
+  "chat_history": [
+    {
+      "timestamp": "2026-01-12 12:18:51",
+      "question": "what is html",
+      "answer": "According to the provided context from the PDF document, HTML stands for Hyper Text Markup Language. It is used to show content on the page and describes the structure of a Website semantically along with presentation cues, making it a mark-up language, rather than a programming language."
+    },
+    {
+      "timestamp": "2026-01-12 12:19:27",
+      "question": "what is table header",
+      "answer": "According to the provided context, a table header can be defined as the top row of a table, which is typically created using the <th> element. However, table headers can also be created using the <thead> element, which is a separate table header section.\n\nIn the code example provided, the table header is created using the <thead> element and contains a single row with two table data cells (<td>) that span across both columns using the colspan attribute.\n\nSo, to answer the question, a table header is the top section of a table that contains the column headers, which can be created using either the <th> element or the <thead> element."
+    }
+  ]
+}
